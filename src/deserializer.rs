@@ -19,6 +19,8 @@ pub enum Error {
     ParseIntError(usize),
     #[error("expected array at {0}")]
     ExpectedArray(usize),
+    #[error("map has no associated value at {0}")]
+    MissingValue(usize),
 }
 
 impl de::Error for Error {
@@ -154,7 +156,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
         }
     }
 
-    forward_to_deserialize_any! {bool i8 i16 i32 i64 u8 u16 u32 u64 bytes str string}
+    forward_to_deserialize_any! {bool i8 i16 i32 i64 u8 u16 u32 u64 bytes str string ignored_any}
 
     fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
@@ -246,33 +248,42 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
 
     fn deserialize_tuple_struct<V>(
         self,
-        name: &'static str,
-        len: usize,
+        _name: &'static str,
+        _len: usize,
         visitor: V,
     ) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
-        todo!()
+        self.deserialize_seq(visitor)
     }
 
     fn deserialize_map<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
-        todo!()
+        if self.advance()? != b'%' {
+            return Err(Error::ExpectedArray(self.position()));
+        }
+        let pos = self.position();
+        let len = self.until_crlf()?;
+        let len = self.parse_int(len, pos)?;
+        let len: usize = len.try_into().map_err(|_| Error::NegativeLength(pos))?;
+
+        let value = visitor.visit_map(Array::new(self, len))?;
+        Ok(value)
     }
 
     fn deserialize_struct<V>(
         self,
-        name: &'static str,
-        fields: &'static [&'static str],
+        _name: &'static str,
+        _fields: &'static [&'static str],
         visitor: V,
     ) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
-        todo!()
+        self.deserialize_map(visitor)
     }
 
     fn deserialize_enum<V>(
@@ -291,14 +302,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: de::Visitor<'de>,
     {
-        todo!()
-    }
-
-    fn deserialize_ignored_any<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: de::Visitor<'de>,
-    {
-        todo!()
+        self.deserialize_str(visitor)
     }
 }
 
@@ -330,14 +334,23 @@ impl<'a, 'de: 'a> MapAccess<'de> for Array<'a, 'de> {
     where
         K: de::DeserializeSeed<'de>,
     {
-        todo!()
+        if self.len == 0 {
+            return Ok(None);
+        }
+
+        seed.deserialize(&mut *self.de).map(Some)
     }
 
     fn next_value_seed<V>(&mut self, seed: V) -> Result<V::Value, Self::Error>
     where
         V: de::DeserializeSeed<'de>,
     {
-        todo!()
+        if self.len == 0 {
+            return Err(Error::MissingValue(self.de.position()));
+        }
+
+        self.len -= 1;
+        seed.deserialize(&mut *self.de)
     }
 }
 
@@ -349,6 +362,7 @@ impl<'a, 'de: 'a> Array<'a, 'de> {
 
 #[cfg(test)]
 mod tests {
+    #![allow(dead_code)]
     use super::*;
     use serde::Deserialize;
 
@@ -365,6 +379,14 @@ mod tests {
     #[derive(Deserialize, PartialEq, Eq, Debug)]
     enum Baz {
         A,
+    }
+
+    #[derive(Deserialize, PartialEq, Eq, Debug)]
+    #[serde(untagged)]
+    enum Untagged {
+        Int(i64),
+        String(String),
+        Array(Vec<i32>),
     }
 
     fn prs<'a, T>(b: &'a [u8]) -> T
@@ -466,5 +488,22 @@ mod tests {
         }
     );
 
-    case!(Baz, enum_case, (todo!() as &str), Baz::A);
+    // case!(Baz, enum_case, (todo!() as &str), Baz::A);
+    case!(Untagged, untagged_int, ":1", Untagged::Int(1));
+    case!(
+        Untagged,
+        untagged_string,
+        "+hey",
+        Untagged::String("hey".into())
+    );
+    case!(
+        Untagged,
+        untagged_array,
+        ["*3", ":1", ":2", ":3"],
+        Untagged::Array([1, 2, 3].into())
+    );
+
+    case!(Option<String>, option_null_string, "$-1", None);
+    case!(Option<i32>, option_int, "_", None);
+    case!(Option<Vec<i32>>, option_null_array, "*-1", None);
 }
