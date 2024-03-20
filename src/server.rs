@@ -1,8 +1,11 @@
-use std::io::Write;
+use anyhow::bail;
+use redis::{deserializer::from_bytes, serializer::to_bytes, value::Value};
+use tokio::{
+    io::AsyncWriteExt,
+    net::{TcpListener, TcpStream},
+};
 
-use tokio::net::{TcpListener, TcpStream};
-
-async fn handle_connection(socket: TcpStream) -> anyhow::Result<()> {
+async fn handle_connection(mut socket: TcpStream) -> anyhow::Result<()> {
     loop {
         socket.readable().await?;
 
@@ -12,7 +15,18 @@ async fn handle_connection(socket: TcpStream) -> anyhow::Result<()> {
             Ok(0) => break,
             Ok(n) => {
                 println!("read {} bytes", n);
-                std::io::stdout().write_all(&buf[..n])?;
+                let v: Value = from_bytes(&buf[..n])?;
+                println!("{v:?}");
+                let Value::Array(Some(x)) = v else {
+                    bail!("no");
+                };
+                let Value::String(Some(command)) = &x[0] else {
+                    bail!("no 2")
+                };
+
+                println!("got command {command}");
+                let ser = to_bytes(&Value::str("PONG"))?;
+                socket.write_all(&ser).await?;
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 continue;

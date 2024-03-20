@@ -21,6 +21,8 @@ pub enum Error {
     ExpectedArray(usize),
     #[error("map has no associated value at {0}")]
     MissingValue(usize),
+    #[error("expected null (_\\r\\n) at {0}")]
+    ExpectedNull(usize),
 }
 
 impl de::Error for Error {
@@ -96,6 +98,26 @@ impl<'de> Deserializer<'de> {
         self.input = &self.input[n..];
         Ok(buf)
     }
+
+    fn str<V>(&mut self, len: usize, visitor: V) -> Result<V::Value, Error>
+    where
+        V: de::Visitor<'de>,
+    {
+        let buf = self.take(len)?;
+        self.tag(b"\r\n")
+            .then_some(())
+            .ok_or(Error::Syntax(self.position()))?;
+        visitor.visit_borrowed_bytes(buf)
+    }
+
+    /// gets the length of a generic collection thing
+    fn get_length(&mut self) -> Result<usize, Error> {
+        let pos = self.position();
+        let len = self.until_crlf()?;
+        let len = self.parse_int(len, pos)?;
+        let len = len.try_into().map_err(|_| Error::NegativeLength(pos))?;
+        Ok(len)
+    }
 }
 
 pub fn from_bytes<'a, T>(s: &'a [u8]) -> Result<T, Error>
@@ -124,15 +146,16 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
                 visitor.visit_borrowed_bytes(buf)
             }
             b'$' => {
-                let pos = self.position();
-                let len = self.until_crlf()?;
-                let len = self.parse_int(len, pos)?;
-                let len: usize = len.try_into().map_err(|_| Error::NegativeLength(pos))?;
-                let buf = self.take(len)?;
-                self.tag(b"\r\n")
+                let len = self.get_length()?;
+                self.str(len, visitor)
+            }
+            b'=' => {
+                let len = self.get_length()?;
+                self.take(3)?;
+                self.tag(b":")
                     .then_some(())
                     .ok_or(Error::Syntax(self.position()))?;
-                visitor.visit_borrowed_bytes(buf)
+                self.str(len - 4, visitor)
             }
             b':' => {
                 let pos = self.position();
@@ -151,12 +174,23 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
 
                 visitor.visit_bool(b)
             }
+            b'*' => {
+                let len = self.get_length()?;
+                visitor.visit_seq(Array::new(self, len))
+            }
+            b'_' => {
+                let rest = self.until_crlf()?;
+                if !rest.is_empty() {
+                    return Err(Error::Syntax(self.position()));
+                }
+                visitor.visit_none()
+            }
 
-            _ => Err(Error::Syntax(self.position())),
+            _ => Err(Error::Syntax(self.position() - 1)),
         }
     }
 
-    forward_to_deserialize_any! {bool i8 i16 i32 i64 u8 u16 u32 u64 bytes str string ignored_any}
+    forward_to_deserialize_any! {bool i8 i16 i32 i64 u8 u16 u32 u64 bytes str string ignored_any seq}
 
     fn deserialize_f32<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
@@ -190,25 +224,46 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
     where
         V: de::Visitor<'de>,
     {
-        todo!()
+        match self.peek()? {
+            b'_' => {
+                let rest = self.until_crlf()?;
+                if rest != [b'_'] {
+                    return Err(Error::Syntax(self.position()));
+                }
+                visitor.visit_none()
+            }
+            b'$' | b'*' => {
+                let input = self.input;
+                self.advance()?;
+                if let Err(Error::NegativeLength(_)) = self.get_length() {
+                    return visitor.visit_none();
+                };
+                self.input = input;
+                visitor.visit_some(self)
+            }
+            _ => visitor.visit_some(self),
+        }
     }
 
     fn deserialize_unit<V>(self, visitor: V) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
-        todo!()
+        self.tag(b"_\r\n")
+            .then_some(())
+            .ok_or(Error::ExpectedNull(self.position()))?;
+        visitor.visit_unit()
     }
 
     fn deserialize_unit_struct<V>(
         self,
-        name: &'static str,
+        _name: &'static str,
         visitor: V,
     ) -> Result<V::Value, Self::Error>
     where
         V: de::Visitor<'de>,
     {
-        todo!()
+        self.deserialize_unit(visitor)
     }
 
     fn deserialize_newtype_struct<V>(
@@ -220,23 +275,6 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
         V: de::Visitor<'de>,
     {
         visitor.visit_newtype_struct(self)
-    }
-
-    fn deserialize_seq<V>(self, visitor: V) -> Result<V::Value, Self::Error>
-    where
-        V: de::Visitor<'de>,
-    {
-        if self.advance()? != b'*' {
-            return Err(Error::ExpectedArray(self.position()));
-        }
-        let pos = self.position();
-        let len = self.until_crlf()?;
-        let len = self.parse_int(len, pos)?;
-        let len: usize = len.try_into().map_err(|_| Error::NegativeLength(pos))?;
-
-        let value = visitor.visit_seq(Array::new(self, len))?;
-
-        Ok(value)
     }
 
     fn deserialize_tuple<V>(self, _len: usize, visitor: V) -> Result<V::Value, Self::Error>
@@ -265,10 +303,7 @@ impl<'de, 'a> de::Deserializer<'de> for &'a mut Deserializer<'de> {
         if self.advance()? != b'%' {
             return Err(Error::ExpectedArray(self.position()));
         }
-        let pos = self.position();
-        let len = self.until_crlf()?;
-        let len = self.parse_int(len, pos)?;
-        let len: usize = len.try_into().map_err(|_| Error::NegativeLength(pos))?;
+        let len = self.get_length()?;
 
         let value = visitor.visit_map(Array::new(self, len))?;
         Ok(value)
@@ -393,7 +428,7 @@ mod tests {
     where
         T: Deserialize<'a>,
     {
-        from_bytes(b).expect("succeeded with parse")
+        from_bytes(b).expect("failed to parse")
     }
 
     trait Str {
@@ -447,6 +482,14 @@ mod tests {
     }
 
     macro_rules! case {
+        ($ty:ty,$name:ident, $s:expr, ERROR) => {
+            #[test]
+            fn $name() {
+                let res = from_bytes::<$ty>(&($s).to_bytes());
+                assert!(res.is_err());
+            }
+        };
+
         ($ty:ty,$name:ident, $s:expr, $expected:expr) => {
             #[test]
             fn $name() {
@@ -504,6 +547,12 @@ mod tests {
     );
 
     case!(Option<String>, option_null_string, "$-1", None);
+    case!(
+        Option<String>,
+        option_nonnull_string,
+        ["$1", "a"],
+        Some("a".into())
+    );
     case!(Option<i32>, option_int, "_", None);
     case!(Option<Vec<i32>>, option_null_array, "*-1", None);
 }
