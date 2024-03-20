@@ -1,8 +1,29 @@
-use anyhow::bail;
+use std::io::Write;
+
 use tokio::net::{TcpListener, TcpStream};
 
 async fn handle_connection(socket: TcpStream) -> anyhow::Result<()> {
-    bail!("no!")
+    loop {
+        socket.readable().await?;
+
+        let mut buf = [0; 4096];
+
+        match socket.try_read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => {
+                println!("read {} bytes", n);
+                std::io::stdout().write_all(&buf[..n])?;
+            }
+            Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                continue;
+            }
+            Err(e) => {
+                return Err(e.into());
+            }
+        }
+    }
+
+    Ok(())
 }
 
 #[tokio::main]
