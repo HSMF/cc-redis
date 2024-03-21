@@ -7,7 +7,7 @@ use std::{
 use parking_lot::Mutex;
 use serde::Serialize;
 
-use crate::{serializer::to_bytes, value::Value};
+use crate::{case_insensitive::CaseInsensitive, serializer::to_bytes, value::Value};
 
 #[derive(Debug, PartialEq, Eq, PartialOrd, Ord, Default, Clone)]
 struct Entry {
@@ -56,6 +56,18 @@ impl App {
         Self {
             store: Arc::new(Mutex::new(BTreeMap::new())),
             config: Mutex::new(BTreeMap::new()),
+        }
+    }
+
+    pub fn prune_expired(&self) {
+        let mut store = self.store.lock();
+        let expired: Vec<_> = store
+            .iter()
+            .filter_map(|(k, v)| v.is_expired().then_some(k).cloned())
+            .collect();
+
+        for e in expired {
+            store.remove(&e);
         }
     }
 }
@@ -114,7 +126,7 @@ impl ArgParse for SetArgs {
         let mut args = args.iter();
 
         while let Some(arg) = args.next() {
-            if arg.get_str().is_some_and(|x| x.to_lowercase() == "px") {
+            if arg.get_str().is_some_and(|x| CaseInsensitive(x) == "px") {
                 let expiry = args
                     .next()
                     .ok_or(Error::GenericStatic("PX expects expiry."))?;
