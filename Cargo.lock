@@ -330,6 +330,7 @@ dependencies = [
  "atoi",
  "clap",
  "nom",
+ "parking_lot",
  "serde",
  "thiserror",
  "tokio",

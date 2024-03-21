@@ -102,10 +102,10 @@ impl<'a> ser::Serializer for &'a mut Serializer {
     }
 
     fn serialize_str(self, v: &str) -> Result<Self::Ok, Self::Error> {
-        if v.contains("\r\n") {
-            return self.serialize_bytes(v.as_bytes());
-        }
-        write!(self.output, "+{v}\r\n").map_err(Error::IoError)
+        // if v.contains("\r\n") {
+        return self.serialize_bytes(v.as_bytes());
+        // }
+        // write!(self.output, "+{v}\r\n").map_err(Error::IoError)
     }
 
     fn serialize_bytes(self, v: &[u8]) -> Result<Self::Ok, Self::Error> {
@@ -127,7 +127,7 @@ impl<'a> ser::Serializer for &'a mut Serializer {
     }
 
     fn serialize_unit(self) -> Result<Self::Ok, Self::Error> {
-        todo!()
+        write!(self.output, "_\r\n").map_err(Error::IoError)
     }
 
     fn serialize_unit_struct(self, name: &'static str) -> Result<Self::Ok, Self::Error> {

@@ -1,11 +1,16 @@
-use anyhow::bail;
-use redis::{deserializer::from_bytes, serializer::to_bytes, value::Value};
+use std::sync::OnceLock;
+
+use clap::Parser;
+use redis::{commands::App, deserializer::from_bytes, value::Value};
 use tokio::{
     io::AsyncWriteExt,
     net::{TcpListener, TcpStream},
 };
 
+static APP: OnceLock<App> = OnceLock::new();
+
 async fn handle_connection(mut socket: TcpStream) -> anyhow::Result<()> {
+    let app = APP.get().unwrap();
     loop {
         socket.readable().await?;
 
@@ -14,19 +19,13 @@ async fn handle_connection(mut socket: TcpStream) -> anyhow::Result<()> {
         match socket.try_read(&mut buf) {
             Ok(0) => break,
             Ok(n) => {
-                println!("read {} bytes", n);
                 let v: Value = from_bytes(&buf[..n])?;
-                println!("{v:?}");
-                let Value::Array(Some(x)) = v else {
-                    bail!("no");
-                };
-                let Value::String(Some(command)) = &x[0] else {
-                    bail!("no 2")
-                };
-
-                println!("got command {command}");
-                let ser = to_bytes(&Value::str("PONG"))?;
-                socket.write_all(&ser).await?;
+                // println!("{v:?}");
+                let response = app.dispatch_command(v).await;
+                // println!("{response:?}");
+                // use std::io::Write;
+                // std::io::stderr().write_all(&ser)?;
+                socket.write_all(&response).await?;
             }
             Err(ref e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                 continue;
@@ -40,8 +39,26 @@ async fn handle_connection(mut socket: TcpStream) -> anyhow::Result<()> {
     Ok(())
 }
 
+#[derive(clap::Parser)]
+struct Cli {
+    #[clap(long)]
+    dir: Option<String>,
+    #[clap(long)]
+    dbfilename: Option<String>,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+    let mut app = App::new();
+    if let Some(dir) = cli.dir {
+        app.set_config("dir".into(), dir);
+    }
+    if let Some(dbfilename) = cli.dbfilename {
+        app.set_config("dbfilename".into(), dbfilename);
+    }
+
+    APP.set(app).unwrap();
     let listener = TcpListener::bind("0.0.0.0:6379").await?;
     dbg!(redis::add(1, 2));
     loop {
