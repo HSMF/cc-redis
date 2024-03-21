@@ -189,7 +189,7 @@ impl App {
     }
 
     pub async fn ping(&self) -> Resp<impl Serialize> {
-        Ok(Value::str("PONG"))
+        Ok("PONG")
     }
 
     pub async fn echo(&self, argv: &[Value]) -> Resp<impl Serialize> {
@@ -211,7 +211,7 @@ impl App {
 
         map.insert(args.key, entry);
 
-        Ok(Value::str("OK"))
+        Ok("OK")
     }
 
     pub async fn get(&self, argv: &[Value]) -> Resp<impl Serialize> {
